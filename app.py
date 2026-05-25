@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 import io
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Outbound Call Duty Dashboard", layout="wide", page_icon="📞")
 
@@ -31,72 +33,107 @@ COLUMNS = [
     "Postponed to another day", "Resolved once and for all"
 ]
 
-# ─────────────────────────────────────────────
-# MANAGER PASSWORD — change this to your own!
-# ─────────────────────────────────────────────
 MANAGER_PASSWORD = "manager123"
+SHEET_ID = "1p7jFcvQIKOJaPHn-CmvuIL9ucZMzheT-YpnlrItzd5w"
 
 # ─────────────────────────────────────────────
-# SESSION STATE — in-memory data store
+# GOOGLE SHEETS CONNECTION
+# ─────────────────────────────────────────────
+@st.cache_resource
+def get_gsheet_client():
+    creds_dict = st.secrets["gcp_service_account"]
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
+def load_from_gsheet():
+    try:
+        client = get_gsheet_client()
+        sh = client.open_by_key(SHEET_ID)
+        ws = sh.worksheet("Check Daily")
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLUMNS)
+        headers = data[0]
+        rows = data[1:]
+        df = pd.DataFrame(rows, columns=headers)
+        # Ensure all columns exist
+        for c in COLUMNS:
+            if c not in df.columns:
+                df[c] = ""
+        df = df[COLUMNS]
+        df = df[df["Case Number"].notna() & (df["Case Number"] != "")]
+        df["Case Number"] = df["Case Number"].apply(
+            lambda x: str(int(float(x))) if str(x).replace('.','').isdigit() else str(x)
+        ).str.strip()
+        return df
+    except Exception as e:
+        st.error(f"Error loading from Google Sheets: {e}")
+        return pd.DataFrame(columns=COLUMNS)
+
+def save_to_gsheet(df):
+    try:
+        client = get_gsheet_client()
+        sh = client.open_by_key(SHEET_ID)
+        ws = sh.worksheet("Check Daily")
+        df_clean = df.fillna("").astype(str)
+        ws.clear()
+        ws.update([df_clean.columns.tolist()] + df_clean.values.tolist())
+        return True
+    except Exception as e:
+        st.error(f"Error saving to Google Sheets: {e}")
+        return False
+
+def save_row_to_gsheet(df, idx):
+    """Save a single row update efficiently."""
+    save_to_gsheet(df)
+
+# ─────────────────────────────────────────────
+# SESSION STATE
 # ─────────────────────────────────────────────
 if "tickets" not in st.session_state:
-    st.session_state.tickets = pd.DataFrame(columns=COLUMNS)
-
-if "view" not in st.session_state:
-    st.session_state.view = "home"
+    st.session_state.tickets = load_from_gsheet()
 
 if "manager_authenticated" not in st.session_state:
     st.session_state.manager_authenticated = False
 
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = datetime.now()
+
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
-def load_excel(file):
-    df = pd.read_excel(file, sheet_name="Check Daily ", header=1)
-    df = df.dropna(how="all")
-    # Rename to our standard columns as best we can
-    col_map = {
-        "Response": "Response",
-        "Date of listing case in this file": "Date of listing",
-        "Case Number": "Case Number",
-        "Date/Time": "Date/Time",
-        "Assigned to (agents)": "Assigned to (agents)",
-        "Recent interaction (5 days)": "Recent Interaction Date",
-        "Delayed from other department ": "Delayed from other department",
-        "Is it  impossible to contact the customer: (due to different timezone, Public holidays, etc)": "Impossible to contact (reason)",
-        "Called answered (Yes or No)": "Call Answered (Yes/No)",
-        "Date of the call if answered": "Date of call if answered",
-        "if Yes, what is the resolution, key words": "Resolution keywords",
-        "Case resolved  (Yes or No)": "Case Resolved (Yes/No)",
-        "If no, 1st attempt time call back (date and time)": "1st Callback attempt (date & time)",
-        "If no, 2nd attempt call back (date abbd time)": "2nd Callback attempt (date & time)",
-        "to be postponed to another day (Yes, No)": "Postponed to another day",
-        "Resolved once and for all": "Resolved once and for all",
-    }
-    df = df.rename(columns=col_map)
-    # Add missing columns
-    for c in COLUMNS:
-        if c not in df.columns:
-            df[c] = None
-    df = df[COLUMNS]
-    # Keep only rows that have a Case Number
-    df = df[df["Case Number"].notna()]
-    df["Case Number"] = df["Case Number"].apply(
-        lambda x: str(int(float(x))) if str(x).replace('.','').isdigit() else str(x)
-    ).str.strip()
-    return df
-
 def export_excel(df):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Check Daily")
     return buf.getvalue()
 
+def auto_assign(new_df, existing_df):
+    counts = {a: len(existing_df[existing_df["Assigned to (agents)"] == a]) for a in AGENTS}
+    assigned = []
+    for _ in range(len(new_df)):
+        agent_pick = min(counts, key=counts.get)
+        assigned.append(agent_pick)
+        counts[agent_pick] += 1
+    new_df = new_df.copy()
+    new_df["Assigned to (agents)"] = assigned
+    return new_df
+
 # ─────────────────────────────────────────────
-# SIDEBAR NAV
+# SIDEBAR
 # ─────────────────────────────────────────────
 st.sidebar.image("https://img.icons8.com/fluency/96/phone-office.png", width=60)
 st.sidebar.title("📞 Call Duty App")
+st.sidebar.markdown("---")
+
+# Refresh button
+if st.sidebar.button("🔄 Refresh Data"):
+    st.session_state.tickets = load_from_gsheet()
+    st.session_state.last_refresh = datetime.now()
+    st.rerun()
+
+st.sidebar.caption(f"Last refresh: {st.session_state.last_refresh.strftime('%H:%M:%S')}")
 st.sidebar.markdown("---")
 
 role = st.sidebar.radio("I am a:", ["👤 Agent", "🛠️ Manager"])
@@ -108,7 +145,6 @@ if role == "👤 Agent":
     page = st.sidebar.radio("Navigate:", pages)
 
 else:
-    # Manager password gate
     if not st.session_state.manager_authenticated:
         st.title("🔒 Manager Access")
         st.markdown("Please enter the manager password to continue.")
@@ -121,7 +157,6 @@ else:
                 st.error("❌ Incorrect password. Try again.")
         st.stop()
 
-    # Logged in — show logout button
     if st.sidebar.button("🔓 Logout"):
         st.session_state.manager_authenticated = False
         st.rerun()
@@ -130,13 +165,11 @@ else:
     page = st.sidebar.radio("Navigate:", pages)
 
 # ─────────────────────────────────────────────
-# ── AGENT PAGES ──────────────────────────────
+# AGENT PAGES
 # ─────────────────────────────────────────────
 if role == "👤 Agent":
-
     df = st.session_state.tickets
 
-    # ── My Tickets ──
     if page == "My Tickets":
         st.title(f"🎫 My Tickets — {agent_name}")
         my = df[df["Assigned to (agents)"] == agent_name].copy()
@@ -144,8 +177,8 @@ if role == "👤 Agent":
         if my.empty:
             st.info("No tickets assigned to you yet.")
         else:
-            unresolved = my[my["Case Resolved (Yes/No)"].isna() | (my["Case Resolved (Yes/No)"] == "")]
-            resolved   = my[my["Case Resolved (Yes/No)"].notna() & (my["Case Resolved (Yes/No)"] != "")]
+            unresolved = my[my["Case Resolved (Yes/No)"].isna() | (my["Case Resolved (Yes/No)"] == "") | (~my["Case Resolved (Yes/No)"].isin(["Resolved"]))]
+            resolved   = my[my["Case Resolved (Yes/No)"] == "Resolved"]
 
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Assigned", len(my))
@@ -163,13 +196,15 @@ if role == "👤 Agent":
                 )
 
             st.markdown("### ✅ Resolved Tickets")
-            st.dataframe(
-                resolved[["Case Number", "Date/Time", "Call Answered (Yes/No)",
-                           "Resolution keywords", "Case Resolved (Yes/No)"]],
-                use_container_width=True, hide_index=True
-            )
+            if resolved.empty:
+                st.info("No resolved tickets yet.")
+            else:
+                st.dataframe(
+                    resolved[["Case Number", "Date/Time", "Call Answered (Yes/No)",
+                               "Resolution keywords", "Case Resolved (Yes/No)"]],
+                    use_container_width=True, hide_index=True
+                )
 
-    # ── Fill Ticket Details ──
     elif page == "Fill Ticket Details":
         st.title(f"✏️ Fill Ticket Details — {agent_name}")
         my = df[df["Assigned to (agents)"] == agent_name]
@@ -218,71 +253,46 @@ if role == "👤 Agent":
                       if str(row["Call Answered (Yes/No)"]) in ["Yes", "No"] else 0)
 
             st.markdown("---")
-
-            # ── Call section ──
             st.markdown("#### 📞 Call Details")
-            call_date = None
-            resolution_kw = ""
-            case_resolved = ""
-            cb1 = ""
-            cb2 = ""
-            postponed = ""
-            resolved_all_check = False
-            resolved_all_notes = ""
 
-            if call_answered == "Yes":
-                st.markdown("**Date of call**")
-                try:
-                    default_call_date = pd.to_datetime(row["Date of call if answered"]).date() \
-                        if pd.notna(row["Date of call if answered"]) and str(row["Date of call if answered"]) not in ["", "None", "nan"] \
-                        else date.today()
-                except:
-                    default_call_date = date.today()
-                call_date = st.date_input("Call date", value=default_call_date, label_visibility="collapsed")
+            st.markdown("**Date of call (if answered)**")
+            try:
+                default_call_date = pd.to_datetime(row["Date of call if answered"]).date() \
+                    if pd.notna(row["Date of call if answered"]) and str(row["Date of call if answered"]) not in ["", "None", "nan"] \
+                    else date.today()
+            except:
+                default_call_date = date.today()
+            call_date = st.date_input("Call date", value=default_call_date, label_visibility="collapsed")
 
-                resolution_kw = st.text_input("📝 Resolution keywords (e.g. Created WO, Scheduled visit):",
-                    value=str(row["Resolution keywords"]) if pd.notna(row["Resolution keywords"]) and str(row["Resolution keywords"]) not in ["None","nan"] else "",
-                    placeholder="e.g. Created WO, Scheduled visit, Sent email...")
+            resolution_kw = st.text_input("📝 Resolution keywords:",
+                value=str(row["Resolution keywords"]) if pd.notna(row["Resolution keywords"]) and str(row["Resolution keywords"]) not in ["None","nan"] else "",
+                placeholder="e.g. Created WO, Scheduled visit, Sent email...")
 
-                case_resolved = st.selectbox("Case Resolved?", RESOLUTION_OPTIONS,
-                    index=RESOLUTION_OPTIONS.index(str(row["Case Resolved (Yes/No)"]))
-                          if str(row["Case Resolved (Yes/No)"]) in RESOLUTION_OPTIONS else 0)
+            case_resolved = st.selectbox("Case Resolved?", RESOLUTION_OPTIONS,
+                index=RESOLUTION_OPTIONS.index(str(row["Case Resolved (Yes/No)"]))
+                      if str(row["Case Resolved (Yes/No)"]) in RESOLUTION_OPTIONS else 0)
 
-                st.markdown("---")
-                st.markdown("#### ✅ Resolved Once and For All")
-                col_check, col_notes = st.columns([1, 3])
-                with col_check:
-                    resolved_all_check = st.checkbox("Mark as resolved once and for all",
-                        value=str(row["Resolved once and for all"]) in ["True", "Yes", "1"])
-                with col_notes:
-                    resolved_all_notes = st.text_input("Notes (optional):",
-                        value=str(row.get("Resolved once and for all notes","")) if "Resolved once and for all notes" in row and pd.notna(row.get("Resolved once and for all notes","")) else "",
-                        placeholder="Any final notes...")
+            st.markdown("---")
+            st.markdown("#### 🔁 Callback Details")
+            cb1 = st.text_input("1st Callback attempt (date & time):",
+                value=str(row["1st Callback attempt (date & time)"]) if pd.notna(row["1st Callback attempt (date & time)"]) and str(row["1st Callback attempt (date & time)"]) not in ["None","nan"] else "",
+                placeholder="e.g. 2026-05-26 10:00")
+            cb2 = st.text_input("2nd Callback attempt (date & time):",
+                value=str(row["2nd Callback attempt (date & time)"]) if pd.notna(row["2nd Callback attempt (date & time)"]) and str(row["2nd Callback attempt (date & time)"]) not in ["None","nan"] else "",
+                placeholder="e.g. 2026-05-27 14:00")
+            postponed = st.selectbox("Postponed to another day?", ["", "Yes", "No"],
+                index=["", "Yes", "No"].index(str(row["Postponed to another day"]))
+                      if str(row["Postponed to another day"]) in ["Yes", "No"] else 0)
 
-                if case_resolved in ["Not Resolved", "Other"]:
-                    st.markdown("---")
-                    st.markdown("#### 🔁 Callback Details")
-                    cb1 = st.text_input("1st Callback attempt (date & time):",
-                        value=str(row["1st Callback attempt (date & time)"]) if pd.notna(row["1st Callback attempt (date & time)"]) and str(row["1st Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                        placeholder="e.g. 2026-05-26 10:00")
-                    cb2 = st.text_input("2nd Callback attempt (date & time):",
-                        value=str(row["2nd Callback attempt (date & time)"]) if pd.notna(row["2nd Callback attempt (date & time)"]) and str(row["2nd Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                        placeholder="e.g. 2026-05-27 14:00")
-                    postponed = st.selectbox("Postponed to another day?", ["", "Yes", "No"],
-                        index=["", "Yes", "No"].index(str(row["Postponed to another day"]))
-                              if str(row["Postponed to another day"]) in ["Yes", "No"] else 0)
-
-            elif call_answered == "No":
-                st.info("Since call was not answered, please fill callback details below.")
-                cb1 = st.text_input("1st Callback attempt (date & time):",
-                    value=str(row["1st Callback attempt (date & time)"]) if pd.notna(row["1st Callback attempt (date & time)"]) and str(row["1st Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                    placeholder="e.g. 2026-05-26 10:00")
-                cb2 = st.text_input("2nd Callback attempt (date & time):",
-                    value=str(row["2nd Callback attempt (date & time)"]) if pd.notna(row["2nd Callback attempt (date & time)"]) and str(row["2nd Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                    placeholder="e.g. 2026-05-27 14:00")
-                postponed = st.selectbox("Postponed to another day?", ["", "Yes", "No"],
-                    index=["", "Yes", "No"].index(str(row["Postponed to another day"]))
-                          if str(row["Postponed to another day"]) in ["Yes", "No"] else 0)
+            st.markdown("---")
+            st.markdown("#### ✅ Resolved Once and For All")
+            col_check, col_notes = st.columns([1, 3])
+            with col_check:
+                resolved_all_check = st.checkbox("Mark as resolved once and for all",
+                    value=str(row["Resolved once and for all"]) in ["True", "Yes", "1"])
+            with col_notes:
+                resolved_all_notes = st.text_input("Final notes (optional):",
+                    placeholder="Any final notes about this case...")
 
             if st.button("💾 Save Changes", type="primary"):
                 st.session_state.tickets.at[idx, "Date/Time"] = new_dt
@@ -292,27 +302,30 @@ if role == "👤 Agent":
                 st.session_state.tickets.at[idx, "Delayed from other department"] = delayed
                 st.session_state.tickets.at[idx, "Impossible to contact (reason)"] = impossible
                 st.session_state.tickets.at[idx, "Call Answered (Yes/No)"] = call_answered
-                st.session_state.tickets.at[idx, "Date of call if answered"] = str(call_date) if call_date else ""
+                st.session_state.tickets.at[idx, "Date of call if answered"] = str(call_date)
                 st.session_state.tickets.at[idx, "Resolution keywords"] = resolution_kw
                 st.session_state.tickets.at[idx, "Case Resolved (Yes/No)"] = case_resolved
                 st.session_state.tickets.at[idx, "1st Callback attempt (date & time)"] = cb1
                 st.session_state.tickets.at[idx, "2nd Callback attempt (date & time)"] = cb2
                 st.session_state.tickets.at[idx, "Postponed to another day"] = postponed
                 st.session_state.tickets.at[idx, "Resolved once and for all"] = "Yes" if resolved_all_check else "No"
-                st.success(f"✅ Ticket {selected_case} updated successfully!")
+                with st.spinner("Saving to Google Sheets..."):
+                    if save_to_gsheet(st.session_state.tickets):
+                        st.success(f"✅ Ticket {selected_case} saved successfully!")
+                    else:
+                        st.error("Failed to save. Please try again.")
 
 # ─────────────────────────────────────────────
-# ── MANAGER PAGES ─────────────────────────────
+# MANAGER PAGES
 # ─────────────────────────────────────────────
 else:
     df = st.session_state.tickets
 
-    # ── Dashboard ──
     if page == "Dashboard":
         st.title("📊 Manager Dashboard")
 
         if df.empty:
-            st.warning("No tickets loaded yet. Go to **Import / Export** to load your Excel file.")
+            st.warning("No tickets loaded yet.")
         else:
             total = len(df)
             resolved_mask = df["Case Resolved (Yes/No)"] == "Resolved"
@@ -343,18 +356,11 @@ else:
                 ).reset_index()
                 st.dataframe(summary, use_container_width=True, hide_index=True)
 
-            st.markdown("#### 📅 Tickets by Date Listed")
-            df["Date of listing"] = pd.to_datetime(df["Date of listing"], errors="coerce")
-            date_counts = df.groupby(df["Date of listing"].dt.date).size().reset_index()
-            date_counts.columns = ["Date", "Count"]
-            st.line_chart(date_counts.set_index("Date"))
-
-    # ── All Tickets ──
     elif page == "All Tickets":
         st.title("📋 All Tickets")
 
         if df.empty:
-            st.warning("No tickets loaded yet. Go to **Import / Export** to load your Excel file.")
+            st.warning("No tickets loaded yet.")
         else:
             filter_agent = st.selectbox("Filter by agent:", ["All"] + AGENTS)
             filter_status = st.selectbox("Filter by resolution:", ["All", "Resolved", "Not Resolved", "Pending"])
@@ -372,33 +378,15 @@ else:
             st.write(f"Showing **{len(view_df)}** tickets")
             st.dataframe(view_df, use_container_width=True, hide_index=True)
 
-    # ── Add Ticket ──
     elif page == "Add Ticket":
         st.title("➕ Add Tickets")
 
-        def auto_assign(new_df, existing_df):
-            """Evenly assign agents to new tickets based on current workload."""
-            counts = {a: len(existing_df[existing_df["Assigned to (agents)"] == a]) for a in AGENTS}
-            assigned = []
-            for _ in range(len(new_df)):
-                agent_pick = min(counts, key=counts.get)
-                assigned.append(agent_pick)
-                counts[agent_pick] += 1
-            new_df = new_df.copy()
-            new_df["Assigned to (agents)"] = assigned
-            return new_df
-
         tab1, tab2, tab3 = st.tabs(["📋 Paste from Excel", "📁 Upload Excel File", "➕ Single Ticket"])
 
-        # ── Tab 1: Paste from Excel ──
         with tab1:
-            st.markdown("**Copy cells from Excel and paste below.**")
-            st.markdown("Columns needed (in order): `Case Number`, `Date/Time`")
-            st.markdown("Just select those two columns in Excel, copy (Ctrl+C), then paste below:")
-
+            st.markdown("**Copy Case Number + Date/Time columns from Excel, paste below:**")
             pasted = st.text_area("Paste Excel data here:", height=200,
                 placeholder="1414513\t2026-05-11 19:10\n1414517\t2026-05-11 19:38\n...")
-
             list_date_paste = st.date_input("Date of listing for all these tickets:", value=date.today(), key="paste_date")
 
             if st.button("➕ Add Pasted Tickets", type="primary"):
@@ -415,7 +403,6 @@ else:
                                 case = str(parts[0]).strip()
                                 if not case:
                                     continue
-                                # clean decimal if pasted from Excel
                                 try:
                                     case = str(int(float(case)))
                                 except:
@@ -428,7 +415,7 @@ else:
                                 new_row["Case Number"] = case
                                 new_row["Date of listing"] = str(list_date_paste)
                                 new_row["Date/Time"] = dt_val
-                                new_row["Response"] = False
+                                new_row["Response"] = "False"
                                 rows.append(new_row)
 
                         if rows:
@@ -437,29 +424,28 @@ else:
                             st.session_state.tickets = pd.concat(
                                 [st.session_state.tickets, new_df], ignore_index=True
                             )
-                            st.success(f"✅ Added {len(rows)} tickets and auto-assigned to agents!")
+                            with st.spinner("Saving to Google Sheets..."):
+                                save_to_gsheet(st.session_state.tickets)
+                            st.success(f"✅ Added {len(rows)} tickets!")
                             st.dataframe(new_df[["Case Number", "Date/Time", "Assigned to (agents)"]],
                                 use_container_width=True, hide_index=True)
                         if skipped:
-                            st.warning(f"Skipped {len(skipped)} duplicate case(s): {', '.join(skipped)}")
+                            st.warning(f"Skipped {len(skipped)} duplicates: {', '.join(skipped)}")
                     except Exception as e:
-                        st.error(f"Error parsing data: {e}")
+                        st.error(f"Error: {e}")
 
-        # ── Tab 2: Upload Excel ──
         with tab2:
-            st.markdown("Upload an Excel file with new tickets. Needs columns: **Case Number** and **Date/Time** at minimum.")
             new_file = st.file_uploader("Upload Excel file with new tickets:", type=["xlsx"], key="bulk_upload")
-            list_date_upload = st.date_input("Date of listing for all these tickets:", value=date.today(), key="upload_date")
+            list_date_upload = st.date_input("Date of listing:", value=date.today(), key="upload_date")
 
             if new_file:
                 try:
                     preview_df = pd.read_excel(new_file)
-                    # Try to find Case Number column flexibly
                     col_candidates = [c for c in preview_df.columns if "case" in c.lower()]
                     dt_candidates  = [c for c in preview_df.columns if "date" in c.lower() or "time" in c.lower()]
 
                     if not col_candidates:
-                        st.error("Could not find a 'Case Number' column in this file.")
+                        st.error("Could not find a 'Case Number' column.")
                     else:
                         case_col = col_candidates[0]
                         dt_col   = dt_candidates[0] if dt_candidates else None
@@ -484,7 +470,7 @@ else:
                                 new_row["Case Number"] = case
                                 new_row["Date of listing"] = str(list_date_upload)
                                 new_row["Date/Time"] = str(r[dt_col]) if dt_col else ""
-                                new_row["Response"] = False
+                                new_row["Response"] = "False"
                                 rows.append(new_row)
 
                             if rows:
@@ -493,15 +479,14 @@ else:
                                 st.session_state.tickets = pd.concat(
                                     [st.session_state.tickets, new_df], ignore_index=True
                                 )
-                                st.success(f"✅ Added {len(rows)} tickets and auto-assigned to agents!")
-                                st.dataframe(new_df[["Case Number", "Date/Time", "Assigned to (agents)"]],
-                                    use_container_width=True, hide_index=True)
+                                with st.spinner("Saving to Google Sheets..."):
+                                    save_to_gsheet(st.session_state.tickets)
+                                st.success(f"✅ Added {len(rows)} tickets!")
                             if skipped:
-                                st.warning(f"Skipped {len(skipped)} duplicate(s): {', '.join(skipped)}")
+                                st.warning(f"Skipped {len(skipped)} duplicates.")
                 except Exception as e:
-                    st.error(f"Error reading file: {e}")
+                    st.error(f"Error: {e}")
 
-        # ── Tab 3: Single Ticket ──
         with tab3:
             case_num = st.text_input("Case Number *")
             list_date = st.date_input("Date of listing *", value=date.today(), key="single_date")
@@ -519,7 +504,7 @@ else:
                     new_row["Case Number"] = case_num
                     new_row["Date of listing"] = str(list_date)
                     new_row["Date/Time"] = dt
-                    new_row["Response"] = False
+                    new_row["Response"] = "False"
                     new_df = pd.DataFrame([new_row])
                     if auto:
                         new_df = auto_assign(new_df, st.session_state.tickets)
@@ -530,9 +515,10 @@ else:
                     st.session_state.tickets = pd.concat(
                         [st.session_state.tickets, new_df], ignore_index=True
                     )
-                    st.success(f"✅ Ticket {case_num} added and assigned to {assigned}!")
+                    with st.spinner("Saving..."):
+                        save_to_gsheet(st.session_state.tickets)
+                    st.success(f"✅ Ticket {case_num} assigned to {assigned}!")
 
-    # ── Manage Tickets ──
     elif page == "Manage Tickets":
         st.title("🛠️ Manage Tickets")
 
@@ -554,32 +540,66 @@ else:
                 if st.button("💾 Save Edit", type="primary"):
                     st.session_state.tickets.at[idx, "Assigned to (agents)"] = new_agent
                     st.session_state.tickets.at[idx, "Date/Time"] = new_date
+                    with st.spinner("Saving..."):
+                        save_to_gsheet(st.session_state.tickets)
                     st.success("✅ Ticket updated!")
 
             with tab2:
                 st.warning(f"Are you sure you want to delete ticket **{selected}**?")
                 if st.button("🗑️ Confirm Delete", type="primary"):
                     st.session_state.tickets = df.drop(index=idx).reset_index(drop=True)
+                    with st.spinner("Saving..."):
+                        save_to_gsheet(st.session_state.tickets)
                     st.success(f"Ticket {selected} deleted.")
                     st.rerun()
 
-    # ── Import / Export ──
     elif page == "Import / Export":
         st.title("📂 Import / Export")
 
         st.markdown("### 📥 Import Excel File")
+        st.info("This will replace ALL current data with the Excel file contents.")
         uploaded = st.file_uploader("Upload your Excel file (.xlsx)", type=["xlsx"])
         if uploaded:
             try:
-                loaded = load_excel(uploaded)
-                st.success(f"✅ Loaded {len(loaded)} tickets from Excel!")
-                st.dataframe(loaded.head(10), use_container_width=True, hide_index=True)
-                if st.button("✅ Confirm Import — Replace all tickets", type="primary"):
-                    st.session_state.tickets = loaded
-                    st.success("Data imported successfully!")
+                df_load = pd.read_excel(uploaded, sheet_name=0, header=1)
+                df_load = df_load.dropna(how="all")
+                col_map = {
+                    "Response": "Response",
+                    "Date of listing case in this file": "Date of listing",
+                    "Case Number": "Case Number",
+                    "Date/Time": "Date/Time",
+                    "Assigned to (agents)": "Assigned to (agents)",
+                    "Recent interaction (5 days)": "Recent Interaction Date",
+                    "Delayed from other department ": "Delayed from other department",
+                    "Is it  impossible to contact the customer: (due to different timezone, Public holidays, etc)": "Impossible to contact (reason)",
+                    "Called answered (Yes or No)": "Call Answered (Yes/No)",
+                    "Date of the call if answered": "Date of call if answered",
+                    "if Yes, what is the resolution, key words": "Resolution keywords",
+                    "Case resolved  (Yes or No)": "Case Resolved (Yes/No)",
+                    "If no, 1st attempt time call back (date and time)": "1st Callback attempt (date & time)",
+                    "If no, 2nd attempt call back (date abbd time)": "2nd Callback attempt (date & time)",
+                    "to be postponed to another day (Yes, No)": "Postponed to another day",
+                    "Resolved once and for all": "Resolved once and for all",
+                }
+                df_load = df_load.rename(columns=col_map)
+                for c in COLUMNS:
+                    if c not in df_load.columns:
+                        df_load[c] = ""
+                df_load = df_load[COLUMNS]
+                df_load = df_load[df_load["Case Number"].notna()]
+                df_load["Case Number"] = df_load["Case Number"].apply(
+                    lambda x: str(int(float(x))) if str(x).replace('.','').isdigit() else str(x)
+                ).str.strip()
+                st.success(f"✅ Loaded {len(df_load)} tickets!")
+                st.dataframe(df_load.head(10), use_container_width=True, hide_index=True)
+                if st.button("✅ Confirm Import — Replace all data", type="primary"):
+                    st.session_state.tickets = df_load
+                    with st.spinner("Saving to Google Sheets..."):
+                        save_to_gsheet(df_load)
+                    st.success("✅ Data imported and saved to Google Sheets!")
                     st.rerun()
             except Exception as e:
-                st.error(f"Error reading file: {e}")
+                st.error(f"Error: {e}")
 
         st.markdown("---")
         st.markdown("### 📤 Export to Excel")
@@ -593,4 +613,3 @@ else:
                 file_name=f"outbound_call_duty_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
