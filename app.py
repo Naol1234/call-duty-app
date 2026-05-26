@@ -604,7 +604,27 @@ else:
                 st.error(f"Error: {e}")
 
         st.markdown("---")
-        st.markdown("### 🔄 Convert Full Names to Initials")
+        st.markdown("### 🗑️ Delete a Month")
+        st.warning("⚠️ This permanently deletes the month and all its data from Google Sheets!")
+        months_to_delete = [m for m in st.session_state.months_list]
+        del_month = st.selectbox("Select month to delete:", months_to_delete, key="del_month")
+        confirm_del = st.checkbox(f"I confirm I want to permanently delete **{del_month}**")
+        if st.button("🗑️ Delete Month", type="primary"):
+            if not confirm_del:
+                st.error("Please check the confirmation box first.")
+            else:
+                try:
+                    sh = get_client().open_by_key(SHEET_ID)
+                    ws = sh.worksheet(del_month)
+                    sh.del_worksheet(ws)
+                    st.session_state.months_list = get_all_months()
+                    remaining = st.session_state.months_list
+                    st.session_state.active_month = remaining[-1] if remaining else None
+                    st.session_state.tickets = load_month(st.session_state.active_month) if st.session_state.active_month else pd.DataFrame(columns=COLUMNS)
+                    st.success(f"✅ Month '{del_month}' deleted!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error deleting: {e}")
         st.info("Use this once to convert old agent full names to initials in the current month.")
         NAME_MAP = {
             "Fuad Rahimli": "FR", "Muhammad Taimoor": "MT",
