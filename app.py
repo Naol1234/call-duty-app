@@ -8,9 +8,9 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="Outbound Call Duty Dashboard", layout="wide", page_icon="📞")
 
 AGENTS = [
-    "Fuad Rahimli", "Muhammad Taimoor", "Allyson Kawondera",
-    "Sofiane Seddik", "Joseph Muwuduri", "Joseph Muteme",
-    "Prince Ishimwe", "Naol Uso", "Wayne Foromozo", "Wilmah Mupa"
+    "FR", "MT", "AK",
+    "SS", "JMW", "JMT",
+    "PI", "NU", "WF", "WM"
 ]
 DELAY_REASONS = ["", "Different time zone", "Public holiday",
     "Impossible to contact customer", "Delayed from other department", "Other"]
