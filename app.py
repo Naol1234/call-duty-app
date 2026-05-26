@@ -10,7 +10,7 @@ st.set_page_config(page_title="Outbound Call Duty Dashboard", layout="wide", pag
 AGENTS = [
     "FR", "MT", "AK",
     "SS", "JMW", "JMT",
-    "PI", "NU", "WF", "WM"
+    "PI", "NU", "WF", "WM", "IA"
 ]
 DELAY_REASONS = ["", "Different time zone", "Public holiday",
     "Impossible to contact customer", "Delayed from other department", "Other"]
@@ -602,6 +602,31 @@ else:
                     st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
+
+        st.markdown("---")
+        st.markdown("### 🔄 Convert Full Names to Initials")
+        st.info("Use this once to convert old agent full names to initials in the current month.")
+        NAME_MAP = {
+            "Fuad Rahimli": "FR", "Muhammad Taimoor": "MT",
+            "Allyson Kawondera": "AK", "Sofiane Seddik": "SS",
+            "Joseph Muwuduri": "JMW", "Joseph Muteme": "JMT",
+            "Prince Ishimwe": "PI", "Naol Uso": "NU",
+            "Wayne Foromozo": "WF", "Wilmah Mupa": "WM",
+            "Imed Amiraoui": "IA"
+        }
+        if st.button("🔄 Convert Names to Initials for ALL Months", type="primary"):
+            all_m = st.session_state.months_list
+            total_changed = 0
+            with st.spinner("Converting all months..."):
+                for m in all_m:
+                    mdf = load_month(m)
+                    if not mdf.empty:
+                        mdf["Assigned to (agents)"] = mdf["Assigned to (agents)"].replace(NAME_MAP)
+                        save_month(m, mdf)
+                        total_changed += 1
+                st.session_state.tickets = load_month(selected_month)
+            st.success(f"✅ Converted names to initials in {total_changed} month(s)!")
+            st.rerun()
 
         st.markdown("---")
         st.markdown(f"### 📤 Export **{selected_month}** to Excel")
