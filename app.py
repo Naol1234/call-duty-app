@@ -14,7 +14,7 @@ AGENTS = [
 ]
 DELAY_REASONS = ["", "Different time zone", "Public holiday",
     "Impossible to contact customer", "Delayed from other department", "Other"]
-RESOLUTION_OPTIONS = ["", "Resolved", "Not Resolved", "Other"]
+RESOLUTION_OPTIONS = ["", "Resolved", "In Progress", "Not Resolved", "Other"]
 COLUMNS = [
     "Response", "Date of listing", "Case Number", "Date/Time",
     "Assigned to (agents)", "Recent Interaction Date", "Recent Interaction Notes",
@@ -201,27 +201,36 @@ if role == "👤 Agent":
         if my.empty:
             st.info("No tickets assigned to you yet.")
         else:
-            unresolved = my[~(my["Case Resolved (Yes/No)"] == "Resolved")]
-            resolved   = my[my["Case Resolved (Yes/No)"] == "Resolved"]
+            resolved_t    = my[my["Case Resolved (Yes/No)"] == "Resolved"]
+            in_prog_t     = my[my["Case Resolved (Yes/No)"] == "In Progress"]
+            not_touched_t = my[my["Case Resolved (Yes/No)"].isin(["","Not Resolved"]) | my["Case Resolved (Yes/No)"].isna()]
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Assigned", len(my))
-            col2.metric("Pending", len(unresolved))
-            col3.metric("Resolved", len(resolved))
+            col2.metric("🟢 Resolved", len(resolved_t))
+            col3.metric("🟡 In Progress", len(in_prog_t))
+            col4.metric("🔴 Not Touched", len(not_touched_t))
 
-            st.markdown("### 🔴 Pending Tickets")
-            if unresolved.empty:
-                st.success("All tickets resolved! 🎉")
+            st.markdown("### 🔴 Not Touched")
+            if not_touched_t.empty:
+                st.success("No untouched tickets!")
             else:
-                st.dataframe(unresolved[["Case Number","Date/Time","Recent Interaction Date",
+                st.dataframe(not_touched_t[["Case Number","Date/Time","Case Resolved (Yes/No)"]],
+                    use_container_width=True, hide_index=True)
+
+            st.markdown("### 🟡 In Progress")
+            if in_prog_t.empty:
+                st.info("No in-progress tickets.")
+            else:
+                st.dataframe(in_prog_t[["Case Number","Date/Time","Recent Interaction Date",
                     "Call Answered (Yes/No)","Case Resolved (Yes/No)"]],
                     use_container_width=True, hide_index=True)
 
-            st.markdown("### ✅ Resolved Tickets")
-            if resolved.empty:
+            st.markdown("### ✅ Resolved")
+            if resolved_t.empty:
                 st.info("No resolved tickets yet.")
             else:
-                st.dataframe(resolved[["Case Number","Date/Time","Call Answered (Yes/No)",
+                st.dataframe(resolved_t[["Case Number","Date/Time","Call Answered (Yes/No)",
                     "Resolution keywords","Case Resolved (Yes/No)"]],
                     use_container_width=True, hide_index=True)
 
@@ -350,11 +359,17 @@ else:
         if df.empty:
             st.warning("No tickets for this month yet.")
         else:
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Total Tickets", len(df))
-            c2.metric("Resolved", (df["Case Resolved (Yes/No)"]=="Resolved").sum())
-            c3.metric("Pending", (df["Case Resolved (Yes/No)"]!="Resolved").sum())
-            c4.metric("Call Answered", (df["Call Answered (Yes/No)"]=="Yes").sum())
+            resolved    = (df["Case Resolved (Yes/No)"] == "Resolved").sum()
+            in_progress = (df["Case Resolved (Yes/No)"] == "In Progress").sum()
+            not_touched = (df["Case Resolved (Yes/No)"].isin(["","Not Resolved"]) | df["Case Resolved (Yes/No)"].isna()).sum()
+            total = len(df)
+
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Total Tickets", total)
+            c2.metric("🟢 Resolved", resolved)
+            c3.metric("🟡 In Progress", in_progress)
+            c4.metric("🔴 Not Touched", not_touched)
+            c5.metric("📞 Call Answered", (df["Call Answered (Yes/No)"]=="Yes").sum())
 
             st.markdown("---")
             col_a, col_b = st.columns(2)
@@ -364,11 +379,12 @@ else:
                 ac.columns = ["Agent","Tickets"]
                 st.bar_chart(ac.set_index("Agent"))
             with col_b:
-                st.markdown("#### Resolved vs Pending per Agent")
+                st.markdown("#### Status Breakdown per Agent")
                 summary = df.groupby("Assigned to (agents)").apply(
                     lambda x: pd.Series({
-                        "Resolved": (x["Case Resolved (Yes/No)"]=="Resolved").sum(),
-                        "Pending": (x["Case Resolved (Yes/No)"]!="Resolved").sum()
+                        "🟢 Resolved": (x["Case Resolved (Yes/No)"]=="Resolved").sum(),
+                        "🟡 In Progress": (x["Case Resolved (Yes/No)"]=="In Progress").sum(),
+                        "🔴 Not Touched": (x["Case Resolved (Yes/No)"].isin(["","Not Resolved"]) | x["Case Resolved (Yes/No)"].isna()).sum(),
                     })
                 ).reset_index()
                 st.dataframe(summary, use_container_width=True, hide_index=True)
