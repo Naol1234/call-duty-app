@@ -238,12 +238,16 @@ if role == "👤 Agent":
             idx = df[df["Case Number"] == selected_case].index[0]
             row = df.loc[idx]
 
+            # Force all widgets to reset when ticket changes
+            _key = f"ticket_{selected_case}"
+
             with st.expander("📋 Ticket Info", expanded=True):
                 col1, col2, col3 = st.columns(3)
-                col1.text_input("Case Number 🔒", value=str(row['Case Number']), disabled=True)
-                new_dt = col2.text_input("Date/Time", value=str(row['Date/Time']) if str(row['Date/Time']) not in ["None","nan"] else "")
+                col1.text_input("Case Number 🔒", value=str(row['Case Number']), disabled=True, key=f"cn_{_key}")
+                new_dt = col2.text_input("Date/Time", value=str(row['Date/Time']) if str(row['Date/Time']) not in ["None","nan"] else "", key=f"dt_{_key}")
                 new_agent = col3.selectbox("Assigned to", AGENTS,
-                    index=AGENTS.index(row["Assigned to (agents)"]) if row["Assigned to (agents)"] in AGENTS else 0)
+                    index=AGENTS.index(row["Assigned to (agents)"]) if row["Assigned to (agents)"] in AGENTS else 0,
+                    key=f"ag_{_key}")
 
             st.markdown("### Fill in the fields below")
 
@@ -253,22 +257,25 @@ if role == "👤 Agent":
                     if str(row["Recent Interaction Date"]) not in ["","None","nan"] else date.today()
             except:
                 default_date = date.today()
-            ri_date = st.date_input("Date", value=default_date, label_visibility="collapsed")
+            ri_date = st.date_input("Date", value=default_date, label_visibility="collapsed", key=f"rid_{_key}")
             ri_notes = st.text_area("Recent Interaction Notes",
                 value=str(row["Recent Interaction Notes"]) if str(row["Recent Interaction Notes"]) not in ["None","nan"] else "",
-                placeholder="Type your notes here...")
+                placeholder="Type your notes here...", key=f"rin_{_key}")
 
             delayed = st.selectbox("Delayed from other department?", ["","Yes","No"],
                 index=["","Yes","No"].index(str(row["Delayed from other department"]))
-                      if str(row["Delayed from other department"]) in ["Yes","No"] else 0)
+                      if str(row["Delayed from other department"]) in ["Yes","No"] else 0,
+                key=f"del_{_key}")
 
             impossible = st.selectbox("Impossible to contact (reason):", DELAY_REASONS,
                 index=DELAY_REASONS.index(str(row["Impossible to contact (reason)"]))
-                      if str(row["Impossible to contact (reason)"]) in DELAY_REASONS else 0)
+                      if str(row["Impossible to contact (reason)"]) in DELAY_REASONS else 0,
+                key=f"imp_{_key}")
 
             call_answered = st.selectbox("Call Answered?", ["","Yes","No"],
                 index=["","Yes","No"].index(str(row["Call Answered (Yes/No)"]))
-                      if str(row["Call Answered (Yes/No)"]) in ["Yes","No"] else 0)
+                      if str(row["Call Answered (Yes/No)"]) in ["Yes","No"] else 0,
+                key=f"ca_{_key}")
 
             st.markdown("---")
             st.markdown("#### 📞 Call Details")
@@ -277,36 +284,39 @@ if role == "👤 Agent":
                     if str(row["Date of call if answered"]) not in ["","None","nan"] else date.today()
             except:
                 default_call = date.today()
-            call_date = st.date_input("Date of call", value=default_call, label_visibility="collapsed")
+            call_date = st.date_input("Date of call", value=default_call, label_visibility="collapsed", key=f"cd_{_key}")
 
             resolution_kw = st.text_input("📝 Resolution keywords:",
                 value=str(row["Resolution keywords"]) if str(row["Resolution keywords"]) not in ["None","nan"] else "",
-                placeholder="e.g. Created WO, Scheduled visit...")
+                placeholder="e.g. Created WO, Scheduled visit...", key=f"rk_{_key}")
 
             case_resolved = st.selectbox("Case Resolved?", RESOLUTION_OPTIONS,
                 index=RESOLUTION_OPTIONS.index(str(row["Case Resolved (Yes/No)"]))
-                      if str(row["Case Resolved (Yes/No)"]) in RESOLUTION_OPTIONS else 0)
+                      if str(row["Case Resolved (Yes/No)"]) in RESOLUTION_OPTIONS else 0,
+                key=f"cr_{_key}")
 
             st.markdown("---")
             st.markdown("#### 🔁 Callback Details")
             cb1 = st.text_input("1st Callback attempt:",
                 value=str(row["1st Callback attempt (date & time)"]) if str(row["1st Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                placeholder="e.g. 2026-05-26 10:00")
+                placeholder="e.g. 2026-05-26 10:00", key=f"cb1_{_key}")
             cb2 = st.text_input("2nd Callback attempt:",
                 value=str(row["2nd Callback attempt (date & time)"]) if str(row["2nd Callback attempt (date & time)"]) not in ["None","nan"] else "",
-                placeholder="e.g. 2026-05-27 14:00")
+                placeholder="e.g. 2026-05-27 14:00", key=f"cb2_{_key}")
             postponed = st.selectbox("Postponed to another day?", ["","Yes","No"],
                 index=["","Yes","No"].index(str(row["Postponed to another day"]))
-                      if str(row["Postponed to another day"]) in ["Yes","No"] else 0)
+                      if str(row["Postponed to another day"]) in ["Yes","No"] else 0,
+                key=f"pp_{_key}")
 
             st.markdown("---")
             st.markdown("#### ✅ Resolved Once and For All")
             col_c, col_n = st.columns([1,3])
             with col_c:
                 resolved_all = st.checkbox("Resolved once and for all",
-                    value=str(row["Resolved once and for all"]) in ["True","Yes","1"])
+                    value=str(row["Resolved once and for all"]) in ["True","Yes","1"],
+                    key=f"ra_{_key}")
             with col_n:
-                resolved_notes = st.text_input("Final notes:", placeholder="Any final notes...")
+                resolved_notes = st.text_input("Final notes:", placeholder="Any final notes...", key=f"rn_{_key}")
 
             if st.button("💾 Save Changes", type="primary"):
                 st.session_state.tickets.at[idx, "Date/Time"] = new_dt
